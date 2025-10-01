@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"sort"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -270,15 +272,25 @@ func cleanResource(obj *unstructured.Unstructured) {
 
 // createArchive creates a tar.gz archive from the backup directory
 func (bm *BackupManager) createArchive(sourceDir, storagePath string) (string, error) {
+	// Resolve host:// storage path to an in-container mount path if applicable.
+	// Convention: host://<absolute-path> maps to /host-mounts/<absolute-path-without-leading-slash>
+	resolvedStoragePath := storagePath
+	if strings.HasPrefix(storagePath, "host://") {
+		hostPath := strings.TrimPrefix(storagePath, "host://")
+		// sanitize leading slash
+		hostPath = strings.TrimPrefix(hostPath, "/")
+		resolvedStoragePath = filepath.Join("/host-mounts", hostPath)
+	}
+
 	// Ensure storage directory exists
-	storageDir := filepath.Dir(storagePath)
+	storageDir := resolvedStoragePath
 	if err := os.MkdirAll(storageDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create storage directory: %w", err)
 	}
 
 	// Create archive file with timestamp
 	timestamp := time.Now().Format("20060102-150405")
-	archivePath := filepath.Join(storagePath, fmt.Sprintf("cluster-backup-%s.tar.gz", timestamp))
+	archivePath := filepath.Join(resolvedStoragePath, fmt.Sprintf("cluster-backup-%s.tar.gz", timestamp))
 
 	file, err := os.Create(archivePath)
 	if err != nil {
@@ -342,6 +354,76 @@ func (bm *BackupManager) createArchive(sourceDir, storagePath string) (string, e
 	}
 
 	return archivePath, nil
+}
+
+// CleanupArchives removes old archives based on retention days and max archives
+func (bm *BackupManager) CleanupArchives(storagePath string, retentionDays *int, maxArchives *int) error {
+	resolvedStoragePath := storagePath
+	if strings.HasPrefix(storagePath, "host://") {
+		hostPath := strings.TrimPrefix(storagePath, "host://")
+		hostPath = strings.TrimPrefix(hostPath, "/")
+		resolvedStoragePath = filepath.Join("/host-mounts", hostPath)
+	}
+
+	entries, err := os.ReadDir(resolvedStoragePath)
+	if err != nil {
+		return fmt.Errorf("failed to read storage directory: %w", err)
+	}
+
+	// collect archive files with info
+	var files []os.DirEntry
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), "cluster-backup-") && strings.HasSuffix(e.Name(), ".tar.gz") {
+			files = append(files, e)
+		}
+	}
+
+	// sort by name (timestamp in name gives chronological order)
+	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+
+	// Apply retentionDays
+	if retentionDays != nil {
+		cutoff := time.Now().Add(-time.Duration(*retentionDays) * 24 * time.Hour)
+		for _, f := range files {
+			fi, err := f.Info()
+			if err != nil {
+				continue
+			}
+			if fi.ModTime().Before(cutoff) {
+				os.Remove(filepath.Join(resolvedStoragePath, f.Name()))
+			}
+		}
+	}
+
+	// Re-read and enforce maxArchives if needed
+	if maxArchives != nil {
+		entries2, err := os.ReadDir(resolvedStoragePath)
+		if err != nil {
+			return nil
+		}
+		var files2 []os.DirEntry
+		for _, e := range entries2 {
+			if e.IsDir() {
+				continue
+			}
+			if strings.HasPrefix(e.Name(), "cluster-backup-") && strings.HasSuffix(e.Name(), ".tar.gz") {
+				files2 = append(files2, e)
+			}
+		}
+		sort.Slice(files2, func(i, j int) bool { return files2[i].Name() < files2[j].Name() })
+		if len(files2) > *maxArchives {
+			// delete oldest first
+			toDelete := len(files2) - *maxArchives
+			for i := 0; i < toDelete; i++ {
+				os.Remove(filepath.Join(resolvedStoragePath, files2[i].Name()))
+			}
+		}
+	}
+
+	return nil
 }
 
 // contains checks if a slice contains a string

@@ -54,6 +54,21 @@ type ClusterBackupSpec struct {
 	// If empty, backup runs once when the resource is created
 	// +optional
 	Schedule string `json:"schedule,omitempty"`
+
+	// RetentionDays defines how many days to retain backups. If set, backups
+	// older than this value (based on modification time) will be removed.
+	// +optional
+	RetentionDays *int `json:"retentionDays,omitempty"`
+
+	// MaxArchives defines the maximum number of archives to keep for this backup
+	// resource. If set, older archives beyond this limit will be deleted.
+	// +optional
+	MaxArchives *int `json:"maxArchives,omitempty"`
+
+	// DeleteOnDelete controls whether the operator should remove archives
+	// created by this ClusterBackup when the ClusterBackup CR is deleted.
+	// +optional
+	DeleteOnDelete *bool `json:"deleteOnDelete,omitempty"`
 }
 
 // ClusterBackupStatus defines the observed state of ClusterBackup.

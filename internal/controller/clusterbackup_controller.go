@@ -135,8 +135,19 @@ func (r *ClusterBackupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	log.Info("Backup completed successfully", "resourceCount", result.ResourceCount, "location", result.FilePath)
 
+	// Run retention cleanup if configured
+	if clusterBackup.Spec.RetentionDays != nil || clusterBackup.Spec.MaxArchives != nil {
+		if err := r.BackupManager.CleanupArchives(clusterBackup.Spec.StoragePath, clusterBackup.Spec.RetentionDays, clusterBackup.Spec.MaxArchives); err != nil {
+			log.Error(err, "Failed to cleanup old archives")
+		}
+	}
+
 	// If there's a schedule, requeue for next run
 	if clusterBackup.Spec.Schedule != "" {
+		// Try to parse schedule as a duration (e.g., "24h"). If parsing fails, fallback to 1h requeue.
+		if d, err := time.ParseDuration(clusterBackup.Spec.Schedule); err == nil {
+			return ctrl.Result{RequeueAfter: d}, nil
+		}
 		// TODO: Implement proper cron scheduling
 		return ctrl.Result{RequeueAfter: time.Hour}, nil
 	}
@@ -175,8 +186,15 @@ func (r *ClusterBackupReconciler) handleDeletion(ctx context.Context, clusterBac
 	log := logf.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(clusterBackup, backupFinalizer) {
-		// Perform cleanup if needed (e.g., delete backup files)
-		log.Info("Cleaning up ClusterBackup resources", "name", clusterBackup.Name)
+		// If configured, remove archives created by this ClusterBackup
+		if clusterBackup.Spec.DeleteOnDelete != nil && *clusterBackup.Spec.DeleteOnDelete {
+			log.Info("Deleting archives for ClusterBackup", "name", clusterBackup.Name, "storagePath", clusterBackup.Spec.StoragePath)
+			// Attempt to delete all archives in the storage path by setting maxArchives=0
+			zero := 0
+			if err := r.BackupManager.CleanupArchives(clusterBackup.Spec.StoragePath, nil, &zero); err != nil {
+				log.Error(err, "Failed to delete archives for ClusterBackup", "name", clusterBackup.Name)
+			}
+		}
 
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(clusterBackup, backupFinalizer)
