@@ -1,0 +1,9 @@
+apiVersion: backup.backup.io/v1alpha1
+kind: ClusterBackup
+metadata:
+  labels:
+    app.kubernetes.io/name: backup-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: clusterbackup-sample
+spec:
+  # TODO(user): Add fields here
