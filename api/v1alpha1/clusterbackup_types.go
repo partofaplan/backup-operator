@@ -69,6 +69,20 @@ type ClusterBackupSpec struct {
 	// created by this ClusterBackup when the ClusterBackup CR is deleted.
 	// +optional
 	DeleteOnDelete *bool `json:"deleteOnDelete,omitempty"`
+
+	// Restore describes how to restore resources from an existing archive.
+	// When specified, the controller will attempt to restore the referenced
+	// archive. The restore runs once per generation and archive name pair.
+	// +optional
+	Restore *ClusterRestoreSpec `json:"restore,omitempty"`
+}
+
+// ClusterRestoreSpec contains the parameters needed to restore from a backup archive.
+type ClusterRestoreSpec struct {
+	// ArchiveName identifies the archive file sitting inside the configured
+	// storagePath that should be reapplied to the cluster.
+	// +kubebuilder:validation:MinLength=1
+	ArchiveName string `json:"archiveName"`
 }
 
 // ClusterBackupStatus defines the observed state of ClusterBackup.
@@ -106,6 +120,28 @@ type ClusterBackupStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// LastRestoreTime is the timestamp of the last successful restore.
+	// +optional
+	LastRestoreTime *metav1.Time `json:"lastRestoreTime,omitempty"`
+
+	// LastRestoreArchive records which archive was used during the last restore.
+	// +optional
+	LastRestoreArchive string `json:"lastRestoreArchive,omitempty"`
+
+	// LastRestoreResourceCount is the number of resources that were applied during
+	// the last successful restore.
+	// +optional
+	LastRestoreResourceCount int `json:"lastRestoreResourceCount,omitempty"`
+
+	// LastRestoreObservedGeneration captures which generation triggered the last
+	// successful restore.
+	// +optional
+	LastRestoreObservedGeneration int64 `json:"lastRestoreObservedGeneration,omitempty"`
+
+	// RestoreMessage holds details about the most recent restore attempt.
+	// +optional
+	RestoreMessage string `json:"restoreMessage,omitempty"`
 }
 
 // +kubebuilder:object:root=true

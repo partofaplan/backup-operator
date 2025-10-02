@@ -5,6 +5,7 @@ metadata:
     app.kubernetes.io/name: backup-operator
     app.kubernetes.io/managed-by: kustomize
   name: clusterbackup-sample
+  namespace: backup-operator
 spec:
   storagePath: host:///tmp
   includeNamespaces:
@@ -18,3 +19,5 @@ spec:
   includeClusterResources: true
   retentionDays: 7
   maxArchives: 5
+  restore:
+    archiveName: cluster-backup-20250103-010000.tar.gz

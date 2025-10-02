@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: partofaplan/backup-operator
-  tag: 1.0.0-beta 
+  tag: 1.0.0-beta3 
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

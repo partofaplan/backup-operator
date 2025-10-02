@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -60,6 +61,17 @@ type BackupResult struct {
 	ResourceCount int
 	FilePath      string
 	Error         error
+}
+
+// RestoreResult contains the details from a restore execution.
+type RestoreResult struct {
+	ResourcesApplied int
+}
+
+type archivedResource struct {
+	gvr       schema.GroupVersionResource
+	namespace string
+	object    map[string]interface{}
 }
 
 // NewBackupManager creates a new BackupManager
@@ -373,6 +385,120 @@ func (bm *BackupManager) createArchive(sourceDir, storagePath string) (string, e
 	return archivePath, nil
 }
 
+// RestoreBackup reads an archived backup from storagePath/archiveName and reapplies the
+// resources to the cluster using the manager's dynamic client.
+func (bm *BackupManager) RestoreBackup(ctx context.Context, storagePath, archiveName string) (*RestoreResult, error) {
+	if archiveName == "" {
+		return nil, fmt.Errorf("archive name must be provided")
+	}
+
+	resolvedStoragePath := resolveStoragePath(storagePath)
+	archivePath := filepath.Join(resolvedStoragePath, archiveName)
+
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open archive %q: %w", archiveName, err)
+	}
+	defer file.Close()
+
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open gzip reader: %w", err)
+	}
+	defer gzipReader.Close()
+
+	tarReader := tar.NewReader(gzipReader)
+
+	var (
+		clusterResources    []archivedResource
+		namespacedResources []archivedResource
+	)
+
+	for {
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read archive: %w", err)
+		}
+
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		if !strings.HasSuffix(header.Name, ".json") {
+			continue
+		}
+
+		gvr, namespace, name, err := parseArchiveEntry(header.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse archive entry %q: %w", header.Name, err)
+		}
+
+		data, err := io.ReadAll(tarReader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read data for %q: %w", header.Name, err)
+		}
+
+		var obj map[string]interface{}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal %q: %w", header.Name, err)
+		}
+
+		if err := ensureMetadata(obj, name, namespace); err != nil {
+			return nil, fmt.Errorf("failed to prepare metadata for %q: %w", header.Name, err)
+		}
+
+		resource := archivedResource{gvr: gvr, namespace: namespace, object: obj}
+		if namespace == "" {
+			clusterResources = append(clusterResources, resource)
+		} else {
+			namespacedResources = append(namespacedResources, resource)
+		}
+	}
+
+	applied := 0
+	for _, list := range [][]archivedResource{clusterResources, namespacedResources} {
+		for _, res := range list {
+			namespaceable := bm.DynamicClient.Resource(res.gvr)
+			var resourceClient dynamic.ResourceInterface = namespaceable
+			if res.namespace != "" {
+				resourceClient = namespaceable.Namespace(res.namespace)
+			}
+
+			obj := &unstructured.Unstructured{Object: res.object}
+
+			if res.namespace != "" {
+				obj.SetNamespace(res.namespace)
+			}
+
+			created, err := resourceClient.Create(ctx, obj, metav1.CreateOptions{})
+			if err != nil {
+				if !apierrors.IsAlreadyExists(err) {
+					return nil, fmt.Errorf("failed to create resource %s/%s: %w", res.namespace, obj.GetName(), err)
+				}
+
+				existing, getErr := resourceClient.Get(ctx, obj.GetName(), metav1.GetOptions{})
+				if getErr != nil {
+					return nil, fmt.Errorf("failed to fetch existing resource %s/%s: %w", res.namespace, obj.GetName(), getErr)
+				}
+
+				obj.SetResourceVersion(existing.GetResourceVersion())
+				if _, err := resourceClient.Update(ctx, obj, metav1.UpdateOptions{}); err != nil {
+					return nil, fmt.Errorf("failed to update resource %s/%s: %w", res.namespace, obj.GetName(), err)
+				}
+			} else {
+				obj = created
+			}
+
+			applied++
+		}
+	}
+
+	return &RestoreResult{ResourcesApplied: applied}, nil
+}
+
 // CleanupArchives removes old archives based on retention days and max archives
 func (bm *BackupManager) CleanupArchives(storagePath string, retentionDays *int, maxArchives *int) error {
 	resolvedStoragePath := resolveStoragePath(storagePath)
@@ -445,18 +571,97 @@ func (bm *BackupManager) CleanupArchives(storagePath string, retentionDays *int,
 	return nil
 }
 
+func ensureMetadata(obj map[string]interface{}, name, namespace string) error {
+	metaObj, ok := obj["metadata"].(map[string]interface{})
+	if !ok || metaObj == nil {
+		metaObj = map[string]interface{}{}
+		obj["metadata"] = metaObj
+	}
+
+	if existingName, ok := metaObj["name"].(string); ok && existingName != "" {
+		name = existingName
+	}
+
+	if name == "" {
+		return fmt.Errorf("resource missing metadata.name")
+	}
+	metaObj["name"] = name
+
+	if namespace != "" {
+		metaObj["namespace"] = namespace
+	}
+
+	return nil
+}
+
+func parseArchiveEntry(path string) (schema.GroupVersionResource, string, string, error) {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	parts := strings.Split(clean, "/")
+	if len(parts) < 2 {
+		return schema.GroupVersionResource{}, "", "", fmt.Errorf("archive path %q is malformed", path)
+	}
+
+	name := strings.TrimSuffix(parts[len(parts)-1], ".json")
+	if name == "" {
+		return schema.GroupVersionResource{}, "", "", fmt.Errorf("archive entry %q missing resource name", path)
+	}
+
+	dirParts := parts[:len(parts)-1]
+	switch dirParts[0] {
+	case "cluster":
+		remainder := dirParts[1:]
+		var group, version, resource string
+		switch len(remainder) {
+		case 2:
+			group = ""
+			version = remainder[0]
+			resource = remainder[1]
+		case 3:
+			group = remainder[0]
+			version = remainder[1]
+			resource = remainder[2]
+		default:
+			return schema.GroupVersionResource{}, "", "", fmt.Errorf("unexpected cluster path format: %q", path)
+		}
+		return schema.GroupVersionResource{Group: group, Version: version, Resource: resource}, "", name, nil
+	case "namespaces":
+		if len(dirParts) < 3 {
+			return schema.GroupVersionResource{}, "", "", fmt.Errorf("unexpected namespaced path format: %q", path)
+		}
+		namespace := dirParts[1]
+		remainder := dirParts[2:]
+		var group, version, resource string
+		switch len(remainder) {
+		case 2:
+			group = ""
+			version = remainder[0]
+			resource = remainder[1]
+		case 3:
+			group = remainder[0]
+			version = remainder[1]
+			resource = remainder[2]
+		default:
+			return schema.GroupVersionResource{}, "", "", fmt.Errorf("unexpected namespaced path format: %q", path)
+		}
+		return schema.GroupVersionResource{Group: group, Version: version, Resource: resource}, namespace, name, nil
+	default:
+		return schema.GroupVersionResource{}, "", "", fmt.Errorf("unrecognised archive prefix %q", dirParts[0])
+	}
+}
+
 func resolveStoragePath(storagePath string) string {
+	const nodeTmp = "/tmp"
 	if strings.HasPrefix(storagePath, "host://") {
 		hostPath := strings.TrimPrefix(storagePath, "host://")
-		hostPath = strings.TrimPrefix(hostPath, "/")
-		hostPath = filepath.Clean(hostPath)
-		for hostPath == ".." || strings.HasPrefix(hostPath, "../") {
-			hostPath = strings.TrimPrefix(hostPath, "../")
+		hostPath = filepath.Clean("/" + strings.TrimPrefix(hostPath, "/"))
+		if hostPath == "/" {
+			return nodeTmp
 		}
-		if hostPath == ".." {
-			hostPath = ""
+		if strings.HasPrefix(hostPath, nodeTmp) {
+			suffix := strings.TrimPrefix(hostPath, nodeTmp)
+			return filepath.Join(nodeTmp, strings.TrimPrefix(suffix, "/"))
 		}
-		return filepath.Join("/host-mounts", hostPath)
+		return filepath.Join(nodeTmp, strings.TrimPrefix(hostPath, "/"))
 	}
 	return storagePath
 }

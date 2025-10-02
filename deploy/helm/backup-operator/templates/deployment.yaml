@@ -81,14 +81,16 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
-            - name: tmp
+            - name: node-tmp
               mountPath: /tmp
-{{- with .Values.extraVolumeMounts }}
-{{ toYaml . | indent 12 }}
-{{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
       volumes:
-        - name: tmp
-          emptyDir: {}
+        - name: node-tmp
+          hostPath:
+            path: /tmp
+            type: DirectoryOrCreate
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -66,6 +66,29 @@ Edit the sample to set a valid `storagePath` (for example `s3://bucket/path` or
 `retentionDays`/`maxArchives`. The status subresource will report progress,
 completion time, and the archive file that was produced.
 
+> Note: `host://` URIs resolve inside the controller container under `/tmp`.
+> The controller bind-mounts the node's `/tmp` directory into the pod, so
+> writing to `host:///tmp/...` persists directly on the node. Override
+> `extraVolumes`/`extraVolumeMounts` (or edit the Kustomize manifests) if you
+> need to target a different persistent path.
+
+### Restore from an existing archive
+
+Set the `spec.restore.archiveName` field to a tarball located under the same
+`storagePath` directory to have the operator reapply its contents:
+
+```yaml
+spec:
+  storagePath: host:///tmp
+  restore:
+    archiveName: cluster-backup-20250103-010000.tar.gz
+```
+
+The controller recreates or updates the resources in that archive and records
+the outcome in `status.restoreMessage`, `status.lastRestoreTime`, and related
+fields. To rerun a restore, change the archive name or modify the spec to bump
+the resource generation.
+
 ### Uninstall
 
 ```sh
@@ -102,4 +125,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-

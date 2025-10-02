@@ -81,6 +81,9 @@ func (r *ClusterBackupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Check if backup has already been completed
 	if clusterBackup.Status.Phase == "Completed" || clusterBackup.Status.Phase == "Failed" {
+		if err := r.handleRestore(ctx, clusterBackup); err != nil {
+			return ctrl.Result{}, err
+		}
 		// If there's a schedule, requeue for next run
 		if clusterBackup.Spec.Schedule != "" {
 			// TODO: Implement cron scheduling
@@ -142,6 +145,10 @@ func (r *ClusterBackupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
+	if err := r.handleRestore(ctx, clusterBackup); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// If there's a schedule, requeue for next run
 	if clusterBackup.Spec.Schedule != "" {
 		// Try to parse schedule as a duration (e.g., "24h"). If parsing fails, fallback to 1h requeue.
@@ -179,6 +186,46 @@ func (r *ClusterBackupReconciler) performBackup(ctx context.Context, clusterBack
 	log.Info("Starting backup operation", "options", opts)
 
 	return r.BackupManager.CreateBackup(ctx, clusterBackup.Spec.StoragePath, opts)
+}
+
+func (r *ClusterBackupReconciler) handleRestore(ctx context.Context, clusterBackup *backupv1alpha1.ClusterBackup) error {
+	restoreSpec := clusterBackup.Spec.Restore
+	if restoreSpec == nil || restoreSpec.ArchiveName == "" {
+		return nil
+	}
+
+	if clusterBackup.Status.LastRestoreArchive == restoreSpec.ArchiveName &&
+		clusterBackup.Status.LastRestoreObservedGeneration == clusterBackup.Generation {
+		return nil
+	}
+
+	log := logf.FromContext(ctx)
+	log.Info("Restoring from archive", "archive", restoreSpec.ArchiveName)
+
+	result, err := r.BackupManager.RestoreBackup(ctx, clusterBackup.Spec.StoragePath, restoreSpec.ArchiveName)
+	if err != nil {
+		clusterBackup.Status.RestoreMessage = fmt.Sprintf("Restore failed: %v", err)
+		backup.SetCondition(&clusterBackup.Status.Conditions, "Restored", metav1.ConditionFalse, "RestoreFailed", err.Error())
+		if statusErr := r.Status().Update(ctx, clusterBackup); statusErr != nil {
+			log.Error(statusErr, "Failed to update status after restore failure")
+		}
+		return err
+	}
+
+	now := metav1.Now()
+	clusterBackup.Status.LastRestoreTime = &now
+	clusterBackup.Status.LastRestoreArchive = restoreSpec.ArchiveName
+	clusterBackup.Status.LastRestoreResourceCount = result.ResourcesApplied
+	clusterBackup.Status.LastRestoreObservedGeneration = clusterBackup.Generation
+	clusterBackup.Status.RestoreMessage = fmt.Sprintf("Restored %d resources from %s", result.ResourcesApplied, restoreSpec.ArchiveName)
+	backup.SetCondition(&clusterBackup.Status.Conditions, "Restored", metav1.ConditionTrue, "RestoreCompleted", "Restore completed successfully")
+
+	if err := r.Status().Update(ctx, clusterBackup); err != nil {
+		log.Error(err, "Failed to update status after successful restore")
+		return err
+	}
+
+	return nil
 }
 
 // handleDeletion handles cleanup when the ClusterBackup is being deleted

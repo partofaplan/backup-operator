@@ -75,6 +75,21 @@ spec:
                 items:
                   type: string
                 type: array
+              restore:
+                description: |-
+                  Restore describes how to restore resources from an existing archive.
+                  When specified, the controller will attempt to restore the referenced
+                  archive. The restore runs once per generation and archive name pair.
+                properties:
+                  archiveName:
+                    description: |-
+                      ArchiveName identifies the archive file sitting inside the configured
+                      storagePath that should be reapplied to the cluster.
+                    minLength: 1
+                    type: string
+                required:
+                - archiveName
+                type: object
               retentionDays:
                 description: |-
                   RetentionDays defines how many days to retain backups. If set, backups
@@ -169,6 +184,26 @@ spec:
                   backup (for scheduled backups)
                 format: date-time
                 type: string
+              lastRestoreArchive:
+                description: LastRestoreArchive records which archive was used during
+                  the last restore.
+                type: string
+              lastRestoreObservedGeneration:
+                description: |-
+                  LastRestoreObservedGeneration captures which generation triggered the last
+                  successful restore.
+                format: int64
+                type: integer
+              lastRestoreResourceCount:
+                description: |-
+                  LastRestoreResourceCount is the number of resources that were applied during
+                  the last successful restore.
+                type: integer
+              lastRestoreTime:
+                description: LastRestoreTime is the timestamp of the last successful
+                  restore.
+                format: date-time
+                type: string
               message:
                 description: Message provides additional information about the backup
                   status
@@ -180,6 +215,10 @@ spec:
               resourceCount:
                 description: ResourceCount is the number of resources backed up
                 type: integer
+              restoreMessage:
+                description: RestoreMessage holds details about the most recent restore
+                  attempt.
+                type: string
               startTime:
                 description: StartTime is the time when the backup started
                 format: date-time

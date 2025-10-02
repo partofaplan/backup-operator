@@ -95,9 +95,11 @@ spec:
             memory: 64Mi
         volumeMounts:
         - mountPath: /tmp
-          name: tmp
+          name: node-tmp
       volumes:
-      - name: tmp
-        emptyDir: {}
+      - name: node-tmp
+        hostPath:
+          path: /tmp
+          type: DirectoryOrCreate
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
