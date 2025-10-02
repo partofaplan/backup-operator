@@ -1,0 +1,9 @@
+1. Ensure the manager image referenced in values.yaml is available to your cluster:
+   export IMG=<registry>/<repo>/backup-operator:<tag>
+   make docker-build docker-push IMG=$IMG
+   helm upgrade --install {{ .Release.Name }} {{ .Chart.Name }} \
+     --namespace {{ .Release.Namespace }} --create-namespace \
+     --set image.repository=${IMG%:*} --set image.tag=${IMG##*:}
+
+2. After the chart is installed, create a ClusterBackup custom resource. A starter manifest is available at:
+   kubectl apply -n {{ .Release.Namespace }} -f config/samples/backup_v1alpha1_clusterbackup.yaml

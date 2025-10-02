@@ -1,0 +1,19 @@
+{{- if and .Values.metrics.enabled .Values.metrics.secure }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    control-plane: controller-manager
+    {{- include "backup-operator.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.metrics.service.type }}
+  ports:
+    - name: https
+      port: {{ .Values.metrics.service.port }}
+      protocol: TCP
+      targetPort: {{ .Values.metrics.service.port }}
+  selector:
+    {{- include "backup-operator.selectorLabels" . | nindent 4 }}
+{{- end }}

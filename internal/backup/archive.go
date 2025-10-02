@@ -21,14 +21,14 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
-
-	"sort"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -95,6 +95,15 @@ func (bm *BackupManager) CreateBackup(ctx context.Context, storagePath string, o
 
 	resourceCount := 0
 
+	resourceTypeFilter := makeStringSet(opts.ResourceTypes, func(s string) string {
+		return strings.ToLower(strings.TrimSpace(s))
+	})
+
+	var (
+		namespaces       []string
+		namespacesLoaded bool
+	)
+
 	// Discover all API resources
 	apiResourceLists, err := bm.DiscoveryClient.ServerPreferredResources()
 	if err != nil {
@@ -125,18 +134,26 @@ func (bm *BackupManager) CreateBackup(ctx context.Context, storagePath string, o
 			}
 
 			// Filter resource types if specified
-			if len(opts.ResourceTypes) > 0 && !contains(opts.ResourceTypes, apiResource.Kind) {
-				continue
+			if len(resourceTypeFilter) > 0 {
+				if _, ok := resourceTypeFilter[strings.ToLower(apiResource.Kind)]; !ok {
+					continue
+				}
 			}
 
 			gvr := gv.WithResource(apiResource.Name)
 
 			// Handle namespaced vs cluster-scoped resources
 			if apiResource.Namespaced {
-				// Backup namespaced resources
-				namespaces, err := bm.getNamespacesToBackup(ctx, opts)
-				if err != nil {
-					return nil, fmt.Errorf("failed to get namespaces: %w", err)
+				// Lazy-load namespace list since it remains constant for the run
+				if !namespacesLoaded {
+					namespaces, err = bm.getNamespacesToBackup(ctx, opts)
+					if err != nil {
+						return nil, fmt.Errorf("failed to get namespaces: %w", err)
+					}
+					namespacesLoaded = true
+				}
+				if len(namespaces) == 0 {
+					continue
 				}
 
 				for _, ns := range namespaces {
@@ -187,12 +204,20 @@ func (bm *BackupManager) getNamespacesToBackup(ctx context.Context, opts BackupO
 		return nil, err
 	}
 
+	excludeSet := makeStringSet(opts.ExcludeNamespaces, func(s string) string {
+		return strings.TrimSpace(s)
+	})
+
 	var namespaces []string
 	for _, item := range list.Items {
 		ns := item.GetName()
-		if !contains(opts.ExcludeNamespaces, ns) {
-			namespaces = append(namespaces, ns)
+		if len(excludeSet) > 0 {
+			if _, skip := excludeSet[ns]; skip {
+				continue
+			}
 		}
+
+		namespaces = append(namespaces, ns)
 	}
 
 	return namespaces, nil
@@ -272,15 +297,7 @@ func cleanResource(obj *unstructured.Unstructured) {
 
 // createArchive creates a tar.gz archive from the backup directory
 func (bm *BackupManager) createArchive(sourceDir, storagePath string) (string, error) {
-	// Resolve host:// storage path to an in-container mount path if applicable.
-	// Convention: host://<absolute-path> maps to /host-mounts/<absolute-path-without-leading-slash>
-	resolvedStoragePath := storagePath
-	if strings.HasPrefix(storagePath, "host://") {
-		hostPath := strings.TrimPrefix(storagePath, "host://")
-		// sanitize leading slash
-		hostPath = strings.TrimPrefix(hostPath, "/")
-		resolvedStoragePath = filepath.Join("/host-mounts", hostPath)
-	}
+	resolvedStoragePath := resolveStoragePath(storagePath)
 
 	// Ensure storage directory exists
 	storageDir := resolvedStoragePath
@@ -358,14 +375,12 @@ func (bm *BackupManager) createArchive(sourceDir, storagePath string) (string, e
 
 // CleanupArchives removes old archives based on retention days and max archives
 func (bm *BackupManager) CleanupArchives(storagePath string, retentionDays *int, maxArchives *int) error {
-	resolvedStoragePath := storagePath
-	if strings.HasPrefix(storagePath, "host://") {
-		hostPath := strings.TrimPrefix(storagePath, "host://")
-		hostPath = strings.TrimPrefix(hostPath, "/")
-		resolvedStoragePath = filepath.Join("/host-mounts", hostPath)
-	}
+	resolvedStoragePath := resolveStoragePath(storagePath)
 
 	entries, err := os.ReadDir(resolvedStoragePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("failed to read storage directory: %w", err)
 	}
@@ -393,37 +408,74 @@ func (bm *BackupManager) CleanupArchives(storagePath string, retentionDays *int,
 				continue
 			}
 			if fi.ModTime().Before(cutoff) {
-				os.Remove(filepath.Join(resolvedStoragePath, f.Name()))
+				if err := os.Remove(filepath.Join(resolvedStoragePath, f.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("failed to remove expired archive %q: %w", f.Name(), err)
+				}
 			}
 		}
 	}
 
 	// Re-read and enforce maxArchives if needed
 	if maxArchives != nil {
-		entries2, err := os.ReadDir(resolvedStoragePath)
+		// Refresh the list from disk to honor deletions performed above.
+		entries, err = os.ReadDir(resolvedStoragePath)
 		if err != nil {
-			return nil
+			return fmt.Errorf("failed to read storage directory for max archive enforcement: %w", err)
 		}
-		var files2 []os.DirEntry
-		for _, e := range entries2 {
+		files = files[:0]
+		for _, e := range entries {
 			if e.IsDir() {
 				continue
 			}
 			if strings.HasPrefix(e.Name(), "cluster-backup-") && strings.HasSuffix(e.Name(), ".tar.gz") {
-				files2 = append(files2, e)
+				files = append(files, e)
 			}
 		}
-		sort.Slice(files2, func(i, j int) bool { return files2[i].Name() < files2[j].Name() })
-		if len(files2) > *maxArchives {
-			// delete oldest first
-			toDelete := len(files2) - *maxArchives
+		sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+		if len(files) > *maxArchives {
+			toDelete := len(files) - *maxArchives
 			for i := 0; i < toDelete; i++ {
-				os.Remove(filepath.Join(resolvedStoragePath, files2[i].Name()))
+				if err := os.Remove(filepath.Join(resolvedStoragePath, files[i].Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("failed to enforce max archives for %q: %w", files[i].Name(), err)
+				}
 			}
 		}
 	}
 
 	return nil
+}
+
+func resolveStoragePath(storagePath string) string {
+	if strings.HasPrefix(storagePath, "host://") {
+		hostPath := strings.TrimPrefix(storagePath, "host://")
+		hostPath = strings.TrimPrefix(hostPath, "/")
+		hostPath = filepath.Clean(hostPath)
+		for hostPath == ".." || strings.HasPrefix(hostPath, "../") {
+			hostPath = strings.TrimPrefix(hostPath, "../")
+		}
+		if hostPath == ".." {
+			hostPath = ""
+		}
+		return filepath.Join("/host-mounts", hostPath)
+	}
+	return storagePath
+}
+
+func makeStringSet(values []string, normalize func(string) string) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if normalize != nil {
+			value = normalize(value)
+		}
+		if value == "" {
+			continue
+		}
+		set[value] = struct{}{}
+	}
+	return set
 }
 
 // contains checks if a slice contains a string

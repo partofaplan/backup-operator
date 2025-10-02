@@ -1,0 +1,53 @@
+replicaCount: 1
+
+image:
+  repository: controller
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+leaderElection:
+  enabled: true
+  namespace: ""
+
+metrics:
+  enabled: true
+  secure: true
+  service:
+    type: ClusterIP
+    port: 8443
+  extraArgs: []
+
+podAnnotations: {}
+podLabels: {}
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+
+args:
+  - "--leader-elect"
+  - "--health-probe-bind-address=:8081"

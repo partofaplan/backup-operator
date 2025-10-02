@@ -1,0 +1,162 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-manager
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+      - "*"
+    resources:
+      - "*"
+    verbs:
+      - get
+      - list
+  - apiGroups:
+      - backup.backup.io
+    resources:
+      - clusterbackups
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - backup.backup.io
+    resources:
+      - clusterbackups/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - backup.backup.io
+    resources:
+      - clusterbackups/status
+    verbs:
+      - get
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-metrics-reader
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+{{- $sa := include "backup-operator.serviceAccountName" . -}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-manager
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "backup-operator.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "backup-operator.fullname" . }}-metrics-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-leader-election
+  namespace: {{ default .Release.Namespace .Values.leaderElection.namespace }}
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-leader-election
+  namespace: {{ default .Release.Namespace .Values.leaderElection.namespace }}
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "backup-operator.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

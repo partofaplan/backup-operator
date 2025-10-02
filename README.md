@@ -1,121 +1,91 @@
 # backup-operator
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Backup Operator is a Kubernetes controller that captures API resources across the
+cluster, serialises them into JSON, and archives the results. Each backup is
+triggered by a `ClusterBackup` custom resource and can be tuned with namespace
+filters, cluster-scope inclusion, and retention settings. The controller manages
+leader election, health/ready probes, and ships a Helm chart for easy
+installation.
 
 ## Getting Started
 
 ### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+- go 1.24.0 or newer
+- docker 17.03 or newer, with access to a registry your cluster can reach
+- kubectl 1.11.3 or newer
+- Access to a Kubernetes 1.11.3+ cluster
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+### Build and publish the controller image
 
-```sh
-make docker-build docker-push IMG=<some-registry>/backup-operator:tag
-```
-
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
-
-**Install the CRDs into the cluster:**
+Set the target registry/tag and use the make targets to build and push the
+manager image. Replace the registry path with one that your cluster can pull
+from.
 
 ```sh
-make install
+export IMG=ghcr.io/<org>/backup-operator:v0.1.0
+make docker-build IMG=$IMG
+make docker-push IMG=$IMG
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+> Tip: for multi-architecture images use `make docker-buildx IMG=$IMG`.
+
+### Deploy with Helm
+
+A first-party chart lives in `deploy/helm/backup-operator`. It packages the
+CRDs, RBAC objects, controller Deployment, and metrics service.
 
 ```sh
-make deploy IMG=<some-registry>/backup-operator:tag
+helm upgrade --install backup-operator ./deploy/helm/backup-operator \
+  --namespace backup-operator --create-namespace \
+  --set image.repository=${IMG%:*} --set image.tag=${IMG##*:}
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+Useful values to override:
+- `image.repository`, `image.tag`, `image.pullPolicy`
+- `leaderElection.enabled` and `leaderElection.namespace`
+- `metrics.enabled`, `metrics.secure`, and `metrics.service.port`
+- `resources`, `affinity`, `tolerations`, `extraEnv`, and `extraVolumes`
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+After the release succeeds, verify the CRD registration:
 
 ```sh
-kubectl apply -k config/samples/
+kubectl get crd clusterbackups.backup.backup.io
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+### Create a ClusterBackup resource
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+With the controller installed, apply a `ClusterBackup` manifest to initiate a
+backup. Use the provided sample as a starting point:
 
 ```sh
-kubectl delete -k config/samples/
+kubectl apply -f config/samples/backup_v1alpha1_clusterbackup.yaml
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+Edit the sample to set a valid `storagePath` (for example `s3://bucket/path` or
+`host:///var/lib/backup-operator`), adjust namespace filters, and tune
+`retentionDays`/`maxArchives`. The status subresource will report progress,
+completion time, and the archive file that was produced.
+
+### Uninstall
 
 ```sh
-make uninstall
+helm uninstall backup-operator --namespace backup-operator
 ```
 
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
+If you deployed with raw manifests, first delete any `ClusterBackup` resources,
+then run `make uninstall` followed by `make undeploy`.
 
 ## Project Distribution
 
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/backup-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/backup-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+The legacy make targets (`make build-installer` and `kubebuilder edit
+--plugins=helm/v1-alpha`) are retained for compatibility, but the Helm chart in
+`deploy/helm/backup-operator` is the recommended distribution mechanism.
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+Run `make help` to inspect available development targets. Refer to the
+[Kubebuilder documentation](https://book.kubebuilder.io/introduction.html) for
+guide rails on extending controller-runtime projects.
 
 ## License
 
