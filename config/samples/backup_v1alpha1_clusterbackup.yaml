@@ -6,11 +6,15 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: clusterbackup-sample
 spec:
-  storagePath: host:///var/lib/backup-operator
+  storagePath: host:///tmp
   includeNamespaces:
     - default
+    - local
+    - snake-game
+    - zachbot
   excludeNamespaces:
     - kube-system
+    - backup-operator
   includeClusterResources: true
   retentionDays: 7
   maxArchives: 5

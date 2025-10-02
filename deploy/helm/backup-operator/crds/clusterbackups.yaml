@@ -39,6 +39,11 @@ spec:
           spec:
             description: spec defines the desired state of ClusterBackup
             properties:
+              deleteOnDelete:
+                description: |-
+                  DeleteOnDelete controls whether the operator should remove archives
+                  created by this ClusterBackup when the ClusterBackup CR is deleted.
+                type: boolean
               excludeNamespaces:
                 description: ExcludeNamespaces specifies namespaces to exclude from
                   the backup
@@ -58,6 +63,11 @@ spec:
                 items:
                   type: string
                 type: array
+              maxArchives:
+                description: |-
+                  MaxArchives defines the maximum number of archives to keep for this backup
+                  resource. If set, older archives beyond this limit will be deleted.
+                type: integer
               resourceTypes:
                 description: |-
                   ResourceTypes specifies which resource types to backup
@@ -65,6 +75,11 @@ spec:
                 items:
                   type: string
                 type: array
+              retentionDays:
+                description: |-
+                  RetentionDays defines how many days to retain backups. If set, backups
+                  older than this value (based on modification time) will be removed.
+                type: integer
               schedule:
                 description: |-
                   Schedule defines a cron schedule for automatic backups
